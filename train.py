@@ -671,7 +671,20 @@ if __name__ == '__main__':
                 w = fitness(x) - fitness(x).min()  # weights
                 if parent == 'single' or len(x) == 1:
                     # x = x[random.randint(0, n - 1)]  # random selection
+                    #x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
+                    import random
+
+                    # Generate or compute the weights
+                    w = [random.uniform(0.1, 1.0) for _ in range(n)]  # Example: Generating random weights between 0.1 and 1.0
+                    
+                    # Ensure that the sum of weights is greater than zero
+                    while sum(w) <= 0:
+                        w = [random.uniform(0.1, 1.0) for _ in range(n)]  # Regenerate weights if the sum is not greater than zero
+                    
+                    # Proceed with the weighted selection
                     x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
+
+                
                 elif parent == 'weighted':
                     x = (x * w.reshape(n, 1)).sum(0) / w.sum()  # weighted combination
 

@@ -532,7 +532,7 @@ if __name__ == '__main__':
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.p5.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs')
-    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
+    parser.add_argument('--img-size', nargs='+', type=int, default=[960, 540], help='[train, test] image sizes')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -671,7 +671,20 @@ if __name__ == '__main__':
                 w = fitness(x) - fitness(x).min()  # weights
                 if parent == 'single' or len(x) == 1:
                     # x = x[random.randint(0, n - 1)]  # random selection
+                    #x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
+                    import random
+
+                    # Generate or compute the weights
+                    w = [random.uniform(0.1, 1.0) for _ in range(n)]  # Example: Generating random weights between 0.1 and 1.0
+                    
+                    # Ensure that the sum of weights is greater than zero
+                    while sum(w) <= 0:
+                        w = [random.uniform(0.1, 1.0) for _ in range(n)]  # Regenerate weights if the sum is not greater than zero
+                    
+                    # Proceed with the weighted selection
                     x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
+
+                
                 elif parent == 'weighted':
                     x = (x * w.reshape(n, 1)).sum(0) / w.sum()  # weighted combination
 
@@ -684,8 +697,10 @@ if __name__ == '__main__':
                 v = np.ones(ng)
                 while all(v == 1):  # mutate until a change occurs (prevent duplicates)
                     v = (g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1).clip(0.3, 3.0)
-                for i, k in enumerate(hyp.keys()):  # plt.hist(v.ravel(), 300)
-                    hyp[k] = float(x[i + 7] * v[i])  # mutate
+                hyp_size = min(len(x) - 7, len(v))  # Determine the size of hyp based on the minimum length of x and v, accounting for the offset
+                for i, k in enumerate(hyp.keys()):  
+                    if i < hyp_size:
+                        hyp[k] = float(x[i + 7] * v[i])  # mutate only if i is within the bounds of x and v
 
             # Constrain to limits
             for k, v in meta.items():

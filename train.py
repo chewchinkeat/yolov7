@@ -614,10 +614,9 @@ if __name__ == '__main__':
             prefix = colorstr('tensorboard: ')
             logger.info(f"{prefix}Start with 'tensorboard --logdir {opt.project}', view at http://localhost:6006/")
             tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
-        # Ensure fg_mask_inboxes is defined before attempting to move it to GPU
-        if 'fg_mask_inboxes' in locals() or 'fg_mask_inboxes' in globals():
-            if device.type == 'cuda':
-                fg_mask_inboxes = fg_mask_inboxes.cuda()
+        # Ensure indices are on the same device as the tensor
+        if device.type == 'cuda':
+            fg_mask_inboxes = fg_mask_inboxes.cuda()
         train(hyp, opt, device, tb_writer)
 
     # Evolve hyperparameters (optional)

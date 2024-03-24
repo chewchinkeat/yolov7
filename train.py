@@ -697,8 +697,10 @@ if __name__ == '__main__':
                 v = np.ones(ng)
                 while all(v == 1):  # mutate until a change occurs (prevent duplicates)
                     v = (g * (npr.random(ng) < mp) * npr.randn(ng) * npr.random() * s + 1).clip(0.3, 3.0)
-                for i, k in enumerate(hyp.keys()):  # plt.hist(v.ravel(), 300)
-                    hyp[k] = float(x[i + 7] * v[i])  # mutate
+                hyp_size = min(len(x) - 7, len(v))  # Determine the size of hyp based on the minimum length of x and v, accounting for the offset
+                for i, k in enumerate(hyp.keys()):  
+                    if i < hyp_size:
+                        hyp[k] = float(x[i + 7] * v[i])  # mutate only if i is within the bounds of x and v
 
             # Constrain to limits
             for k, v in meta.items():

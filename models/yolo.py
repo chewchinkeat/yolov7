@@ -696,15 +696,7 @@ class Model(nn.Module):
             if isinstance(m, RepConv):
                 #print(f" fuse_repvgg_block")
                 m.fuse_repvgg_block()
-            if type(m) is PatchEmbed_FasterNet:
-                m.proj = fuse_conv_and_bn(m.proj, m.norm)
-                delattr(m, 'norm')  # remove BN
-                m.forward = m.fuseforward
-            if type(m) is PatchMerging_FasterNet:
-                m.reduction = fuse_conv_and_bn(m.reduction, m.norm)
-                delattr(m, 'norm')  # remove BN
-                m.forward = m.fuseforward
-            """ elif isinstance(m, RepConv_OREPA):
+            elif isinstance(m, RepConv_OREPA):
                 #print(f" switch_to_deploy")
                 m.switch_to_deploy()
             elif type(m) is Conv and hasattr(m, 'bn'):
@@ -713,7 +705,7 @@ class Model(nn.Module):
                 m.forward = m.fuseforward  # update forward
             elif isinstance(m, (IDetect, IAuxDetect)):
                 m.fuse()
-                m.forward = m.fuseforward """
+                m.forward = m.fuseforward
         self.info()
         return self
 
@@ -767,7 +759,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                  RepResX, RepResXCSPA, RepResXCSPB, RepResXCSPC, 
                  Ghost, GhostCSPA, GhostCSPB, GhostCSPC,
                  SwinTransformerBlock, STCSPA, STCSPB, STCSPC,
-                 SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC,BasicStage,PatchEmbed_FasterNet,PatchMerging_FasterNet]:
+                 SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC,Pconv]:
             c1, c2 = ch[f], args[0]
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, 8)
@@ -785,8 +777,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                      ST2CSPA, ST2CSPB, ST2CSPC]:
                 args.insert(2, n)  # number of repeats
                 n = 1
-        elif m is [BasicStage]:
-            args.pop(1)
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:

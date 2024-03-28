@@ -693,33 +693,19 @@ class Model(nn.Module):
     def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
         print('Fusing layers... ')
         for m in self.model.modules():
-            if isinstance(m, (Conv, DWConv)) and hasattr(m, 'bn'):
+            if isinstance(m, RepConv):
+                #print(f" fuse_repvgg_block")
+                m.fuse_repvgg_block()
+            elif isinstance(m, RepConv_OREPA):
+                #print(f" switch_to_deploy")
+                m.switch_to_deploy()
+            elif type(m) is Conv and hasattr(m, 'bn'):
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
                 delattr(m, 'bn')  # remove batchnorm
-                m.forward = m.forward_fuse  # update forward
-                
-            if type(m) is PatchEmbed:
-                m.proj = fuse_conv_and_bn(m.proj, m.norm)
-                delattr(m, 'norm')  # remove batchnorm
+                m.forward = m.fuseforward  # update forward
+            elif isinstance(m, (IDetect, IAuxDetect)):
+                m.fuse()
                 m.forward = m.fuseforward
-            if type(m) is PatchMerging:
-                m.reduction = fuse_conv_and_bn(m.reduction, m.norm)
-                delattr(m, 'norm')  # remove batchnorm
-                m.forward = m.fuseforward
-            if type(m) is MLPBlock:
-                if hasattr(m, 'mlp'):
-                    re_mlp = nn.Sequential(
-                        nn.Conv2d(m.mlp[0].in_channels, m.mlp[0].out_channels,
-                                  kernel_size=m.mlp[0].kernel_size, stride=m.mlp[0].stride,
-                                  padding=m.mlp[0].padding, groups=m.mlp[0].groups),
-                        nn.ReLU(inplace=True),
-                        nn.Conv2d(m.mlp[3].in_channels, m.mlp[3].out_channels,
-                                  kernel_size=m.mlp[3].kernel_size, stride=m.mlp[3].stride,
-                                  padding=m.mlp[3].padding, bias=False),
-                    )
-                    re_mlp[0] = fuse_conv_and_bn(m.mlp[0], m.mlp[1])
-                    # delattr(m, 'se')
-                    m.mlp = re_mlp
         self.info()
         return self
 

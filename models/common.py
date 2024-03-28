@@ -2015,38 +2015,5 @@ class ST2CSPC(nn.Module):
         y1 = self.cv3(self.m(self.cv1(x)))
         y2 = self.cv2(x)
         return self.cv4(torch.cat((y1, y2), dim=1))
-    
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-class PConv(nn.Module):
-    def __init__(self,
-                 dim: int,
-                 c2,
-                 k,
-                 s=1,
-                 n_div=2,
-                 forward: str = "split_cat",
-                 kernel_size: int = 3) -> None:
-        super(PConv, self).__init__()
-        self.dim_conv = dim//n_div
-        self.dim_untouched = dim - self.dim_conv
-        self.conv = nn.Conv2d(
-            self.dim_conv,
-            self.dim_conv,
-            kernel_size=k,
-            stride=s,
-            padding=k//2,
-            bias=False
-        )
-        self.bn = nn.BatchNorm2d(dim)
-        self.act = nn.SiLU()
- 
-    def forward(self,x):
-        x1,x2 = torch.split(x,[self.dim_conv,self.dim_untouched],dim=1)
-        x1 = self.conv(x1)
-        x = torch.cat((x1,x2),1)
-        return self.act(self.bn(x))
 
 ##### end of swin transformer v2 #####   

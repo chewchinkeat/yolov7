@@ -2139,16 +2139,19 @@ class BasicStage(nn.Module):
  
  
 class PatchEmbed(nn.Module):
+ 
     def __init__(self, in_chans, embed_dim, patch_size, patch_stride, norm_layer):
         super().__init__()
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_stride, bias=False)
-        self.norm = norm_layer(embed_dim) if norm_layer is not None else nn.Identity()
-
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.norm = nn.Identity()
+ 
     def forward(self, x):
-        x = self.proj(x)
-        x = self.norm(x)
+        x = self.norm(self.proj(x))
         return x
-
+ 
     def fuseforward(self, x):
         x = self.proj(x)
         return x

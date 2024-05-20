@@ -2015,145 +2015,180 @@ class ST2CSPC(nn.Module):
         y1 = self.cv3(self.m(self.cv1(x)))
         y2 = self.cv2(x)
         return self.cv4(torch.cat((y1, y2), dim=1))
+    
 
 ##### end of swin transformer v2 #####   
-
-
-def channel_shuffle(x, groups):
-    batchsize, num_channels, height, width = x.data.size()
-    channels_per_group = num_channels // groups
-    # reshape
-    x = x.view(batchsize, groups,
-               channels_per_group, height, width)
-    x = torch.transpose(x, 1, 2).contiguous()
-    # flatten
-    x = x.view(batchsize, -1, height, width)
-    return x
     
-class DWConvblock(nn.Module):
-    "Depthwise conv + Pointwise conv"
-    def __init__(self, in_channels, out_channels, k, s):
-        super(DWConvblock, self).__init__()
-        self.p = k // 2
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=k, stride=s, padding=self.p, groups=in_channels,
-                               bias=False)
-        self.bn1 = nn.BatchNorm2d(in_channels)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-        return x
-        
-class ES_SEModule(nn.Module):
-    def __init__(self, channel, reduction=4):
+
+
+from timm.models.layers import DropPath
+
+
+class Partial_conv3(nn.Module):
+    def __init__(self, dim, n_div, forward):
         super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv1 = nn.Conv2d(
-            in_channels=channel,
-            out_channels=channel // reduction,
-            kernel_size=1,
-            stride=1,
-            padding=0)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(
-            in_channels=channel // reduction,
-            out_channels=channel,
-            kernel_size=1,
-            stride=1,
-            padding=0)
-        self.hardsigmoid = nn.Hardsigmoid()
+        self.dim_conv3 = dim // n_div
+        self.dim_untouched = dim - self.dim_conv3
+        self.partial_conv3 = nn.Conv2d(self.dim_conv3, self.dim_conv3, 3, 1, 1, bias=False)
+
+        if forward == 'slicing':
+            self.forward = self.forward_slicing
+        elif forward == 'split_cat':
+            self.forward = self.forward_split_cat
+        else:
+            raise NotImplementedError
+
+    def forward_slicing(self, x):
+        # only for inference
+        x = x.clone()  # !!! Keep the original input intact for the residual connection later
+        x[:, :self.dim_conv3, :, :] = self.partial_conv3(x[:, :self.dim_conv3, :, :])
+
+        return x
+
+    def forward_split_cat(self, x):
+        # for training/inference
+        x1, x2 = torch.split(x, [self.dim_conv3, self.dim_untouched], dim=1)
+        x1 = self.partial_conv3(x1)
+        x = torch.cat((x1, x2), 1)
+        return x
+
+
+class MLPBlock(nn.Module):
+    def __init__(self,
+                 dim,
+                 n_div,
+                 mlp_ratio,
+                 drop_path,
+                 layer_scale_init_value,
+                 act_layer,
+                 norm_layer,
+                 pconv_fw_type
+                 ):
+
+        super().__init__()
+        self.dim = dim
+        self.mlp_ratio = mlp_ratio
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.n_div = n_div
+
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        mlp_layer = [
+            nn.Conv2d(dim, mlp_hidden_dim, 1, bias=False),
+            norm_layer(mlp_hidden_dim),
+            act_layer(),
+            nn.Conv2d(mlp_hidden_dim, dim, 1, bias=False)
+        ]
+        self.mlp = nn.Sequential(*mlp_layer)
+        self.spatial_mixing = Partial_conv3(
+            dim,
+            n_div,
+            pconv_fw_type
+        )
+        if layer_scale_init_value > 0:
+            self.layer_scale = nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True)
+            self.forward = self.forward_layer_scale
+        else:
+            self.forward = self.forward
+
     def forward(self, x):
-        identity = x
-        x = self.avg_pool(x)
-        x = self.conv1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.hardsigmoid(x)
-        out = identity * x
-        return out
-        
-class ES_Bottleneck(nn.Module):
-    def __init__(self, inp, oup, stride):
-        super(ES_Bottleneck, self).__init__()
-        if not (1 <= stride <= 3):
-            raise ValueError('illegal stride value')
-        self.stride = stride
-        branch_features = oup // 2
-        # assert (self.stride != 1) or (inp == branch_features << 1)
-        if self.stride > 1:
-            self.branch1 = nn.Sequential(
-                self.depthwise_conv(inp, inp, kernel_size=3, stride=self.stride, padding=1),
-                nn.BatchNorm2d(inp),
-                nn.Conv2d(inp, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
-                nn.BatchNorm2d(branch_features),
-                nn.Hardswish(inplace=True),
+        shortcut = x
+        x = self.spatial_mixing(x)
+        x = shortcut + self.drop_path(self.mlp(x))
+        return x
+
+    def forward_layer_scale(self, x):
+        shortcut = x
+        x = self.spatial_mixing(x)
+        x = shortcut + self.drop_path(
+            self.layer_scale.unsqueeze(-1).unsqueeze(-1) * self.mlp(x))
+        return x
+
+
+class BasicStage(nn.Module):
+    def __init__(self,
+                 dim,
+                 depth=1,
+                 n_div=4,
+                 mlp_ratio=2,
+                 layer_scale_init_value=0,
+                 norm_layer=nn.BatchNorm2d,
+                 act_layer=nn.ReLU,
+                 pconv_fw_type='split_cat'
+                 ):
+        super().__init__()
+        dpr = [x.item()
+               for x in torch.linspace(0, 0.0, sum([1, 2, 8, 2]))]
+        blocks_list = [
+            MLPBlock(
+                dim=dim,
+                n_div=n_div,
+                mlp_ratio=mlp_ratio,
+                drop_path=dpr[i],
+                layer_scale_init_value=layer_scale_init_value,
+                norm_layer=norm_layer,
+                act_layer=act_layer,
+                pconv_fw_type=pconv_fw_type
             )
-        self.branch2 = nn.Sequential(
-            nn.Conv2d(inp if (self.stride > 1) else branch_features,
-                      branch_features, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(branch_features),
-            nn.Hardswish(inplace=True),
-            self.depthwise_conv(branch_features, branch_features, kernel_size=3, stride=self.stride, padding=1),
-            nn.BatchNorm2d(branch_features),
-            ES_SEModule(branch_features),
-            nn.Conv2d(branch_features, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(branch_features),
-            nn.Hardswish(inplace=True),
-        )
-        self.branch3 = nn.Sequential(
-            GhostConv(branch_features, branch_features, 3, 1),
-            ES_SEModule(branch_features),
-            nn.Conv2d(branch_features, branch_features, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(branch_features),
-            nn.Hardswish(inplace=True),
-        )
-        self.branch4 = nn.Sequential(
-            self.depthwise_conv(oup, oup, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(oup),
-            nn.Conv2d(oup, oup, kernel_size=1, stride=1, padding=0, bias=False),
-            nn.BatchNorm2d(oup),
-            nn.Hardswish(inplace=True),
-        )
-    @staticmethod
- 
-    def depthwise_conv(i, o, kernel_size=3, stride=1, padding=0, bias=False):
-        return nn.Conv2d(i, o, kernel_size, stride, padding, bias=bias, groups=i)
-    @staticmethod
-    def conv1x1(i, o, kernel_size=1, stride=1, padding=0, bias=False):
-        return nn.Conv2d(i, o, kernel_size, stride, padding, bias=bias)
+            for i in range(depth)
+        ]
+
+        self.blocks = nn.Sequential(*blocks_list)
+
     def forward(self, x):
-        if self.stride == 1:
-            x1, x2 = x.chunk(2, dim=1)
-            x3 = torch.cat((x1, self.branch3(x2)), dim=1)
-            out = channel_shuffle(x3, 2)
-        elif self.stride == 2:
-            x1 = torch.cat((self.branch1(x), self.branch2(x)), dim=1)
-            out = self.branch4(x1)
-        return out
-    
-class CBH(nn.Module):
-    def __init__(self, num_channels, num_filters, filter_size, stride, num_groups=1):
-        super().__init__()
-        self.conv = nn.Conv2d(
-            num_channels,
-            num_filters,
-            filter_size,
-            stride,
-            padding=(filter_size - 1) // 2,
-            groups=num_groups,
-            bias=False)
-        self.bn = nn.BatchNorm2d(num_filters)
-        self.hardswish = nn.Hardswish()
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.hardswish(x)
+        x = self.blocks(x)
         return x
-    
+
+
+class PatchEmbed_FasterNet(nn.Module):
+
+    def __init__(self, in_chans, embed_dim, patch_size, patch_stride, norm_layer=nn.BatchNorm2d):
+        super().__init__()
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_stride, bias=False)
+        if norm_layer is not None:
+            self.norm = norm_layer(embed_dim)
+        else:
+            self.norm = nn.Identity()
+
+    def forward(self, x):
+        x = self.norm(self.proj(x))
+        return x
+
     def fuseforward(self, x):
-        return self.hardswish(self.conv(x))
+        x = self.proj(x)
+        return x
+
+
+class PatchMerging_FasterNet(nn.Module):
+
+    def __init__(self, dim, out_dim, k, patch_stride2, norm_layer=nn.BatchNorm2d):
+        super().__init__()
+        self.reduction = nn.Conv2d(dim, out_dim, kernel_size=k, stride=patch_stride2, bias=False)
+        if norm_layer is not None:
+            self.norm = norm_layer(out_dim)
+        else:
+            self.norm = nn.Identity()
+
+    def forward(self, x):
+        x = self.norm(self.reduction(x))
+        return x
+
+    def fuseforward(self, x):
+        x = self.reduction(x)
+        return x
+
+class C3(nn.Module):
+    # CSP Bottleneck with 3 convolutions
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):
+        """Initializes C3 module with options for channel count, bottleneck repetition, shortcut usage, group
+        convolutions, and expansion.
+        """
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c1, c_, 1, 1)
+        self.cv3 = Conv(2 * c_, c2, 1)  # optional act=FReLU(c2)
+        self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
+
+    def forward(self, x):
+        """Performs forward propagation using concatenated outputs from two convolutions and a Bottleneck sequence."""
+        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
